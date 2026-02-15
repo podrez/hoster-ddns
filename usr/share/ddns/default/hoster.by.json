@@ -1,0 +1,9 @@
+{
+  "name": "hoster.by",
+  "ipv4": {
+    "url": "update_hoster_by.sh"
+  },
+  "ipv6": {
+    "url": "update_hoster_by.sh"
+  }
+}
