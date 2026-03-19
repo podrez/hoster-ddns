@@ -105,7 +105,7 @@ hoster_check_response() {
 
 # ── token cache ──────────────────────────────────────────────────────
 # Sanitise domain for filename: replace dots and @ with underscores
-__TOK_FILE="/tmp/ddns_hoster_by_$(echo "${domain}" | sed 's/[^a-zA-Z0-9]/_/g').tok"
+__TOK_FILE="/tmp/ddns_hoster_by_$(echo "${__DOMAIN}" | sed 's/[^a-zA-Z0-9]/_/g').tok"
 
 __ACCESS_TOKEN=""
 __USER_ID=""

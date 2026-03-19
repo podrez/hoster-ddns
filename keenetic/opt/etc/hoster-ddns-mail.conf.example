@@ -1,0 +1,11 @@
+# /opt/etc/hoster-ddns-mail.conf
+# Пример конфига для второго субдомена (те же или другие учётные данные)
+
+ACCESS_KEY="ваш-access-key"
+SECRET_KEY="ваш-secret-key"
+DOMAIN="mail.example.com"
+
+# IP_SOURCE="auto"
+# TTL=300
+# ORDER_ID_OVERRIDE="12345"
+# VERBOSE=1

@@ -1,0 +1,20 @@
+# /opt/etc/hoster-ddns.conf
+# Конфиг DDNS-апдейтера hoster.by для Keenetic (Entware)
+# Скопируйте в /opt/etc/hoster-ddns.conf и заполните:
+
+# Обязательные параметры
+ACCESS_KEY="ваш-access-key"
+SECRET_KEY="ваш-secret-key"
+DOMAIN="www.example.com"       # FQDN или корневой домен (example.com для apex-записи)
+
+# Необязательные параметры
+# ORDER_ID_OVERRIDE="12345"    # ID DNS-ордера (пропустить авто-поиск)
+# TTL=300                      # TTL в секундах (по умолчанию не меняется)
+
+# Источник IP-адреса (по умолчанию: auto)
+# IP_SOURCE="auto"             # внешний IP через api.ipify.org
+# IP_SOURCE="iface:ppp0"       # IP с WAN-интерфейса Keenetic (обычно ppp0 или eth0)
+# IP_SOURCE="iface:br0"        # IP с LAN-интерфейса
+# IP_SOURCE="url:https://myip.example.com"  # свой URL, возвращающий plain-text IP
+
+# VERBOSE=1                    # подробное логирование в syslog
