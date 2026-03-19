@@ -12,6 +12,8 @@
 #
 # SPDX-License-Identifier: GPL-2.0-only
 
+export PATH="/opt/bin:/opt/sbin:$PATH"
+
 CONFIG="${1:-/opt/etc/hoster-ddns.conf}"
 API="https://serviceapi.hoster.by"
 LOGFILE="/opt/var/log/hoster-ddns.log"
