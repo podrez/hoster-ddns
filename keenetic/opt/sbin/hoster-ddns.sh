@@ -14,11 +14,13 @@
 
 CONFIG="${1:-/opt/etc/hoster-ddns.conf}"
 API="https://serviceapi.hoster.by"
+LOGFILE="/opt/var/log/hoster-ddns.log"
 
 # ── logging ──────────────────────────────────────────────────────────
-log()   { logger -t hoster-ddns "$*"; }
-fatal() { logger -t hoster-ddns "FATAL: $*"; exit 1; }
-debug() { [ "${VERBOSE:-0}" -eq 1 ] && logger -t hoster-ddns "DEBUG: $*" || true; }
+_log_write() { mkdir -p "$(dirname "$LOGFILE")"; printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOGFILE"; }
+log()   { _log_write "[INFO]  $*"; }
+fatal() { _log_write "[FATAL] $*"; exit 1; }
+debug() { [ "${VERBOSE:-0}" -eq 1 ] && _log_write "[DEBUG] $*" || true; }
 
 # ── load config ──────────────────────────────────────────────────────
 [ -f "$CONFIG" ] || fatal "config not found: $CONFIG"

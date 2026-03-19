@@ -104,7 +104,8 @@ VERBOSE=1 /opt/sbin/hoster-ddns.sh
 
 ```sh
 echo "*/5 * * * * /opt/sbin/hoster-ddns.sh" >> /opt/etc/crontabs/root
-/opt/etc/init.d/S10crond restart
+ls /opt/etc/init.d/ | grep -i cron   # узнать точное имя (S10cron или S10crond)
+/opt/etc/init.d/S10cron restart
 ```
 
 ### Несколько доменов
@@ -129,7 +130,7 @@ cp keenetic/opt/etc/hoster-ddns.conf.example /opt/etc/hoster-ddns-mail.conf
 ### Логи
 
 ```sh
-logread | grep hoster-ddns
+tail -f /opt/var/log/hoster-ddns.log
 ```
 
 ---
