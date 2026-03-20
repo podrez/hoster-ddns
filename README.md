@@ -68,7 +68,9 @@ logread | grep ddns
 Установленный Entware и пакеты:
 
 ```sh
-opkg install curl jq
+opkg install curl jq cron
+/opt/etc/init.d/S10cron enable
+/opt/etc/init.d/S10cron start
 ```
 
 ### Установка
@@ -104,7 +106,6 @@ VERBOSE=1 /opt/sbin/hoster-ddns.sh
 
 ```sh
 echo "*/5 * * * * /opt/sbin/hoster-ddns.sh" >> /opt/etc/crontabs/root
-ls /opt/etc/init.d/ | grep -i cron   # узнать точное имя (S10cron или S10crond)
 /opt/etc/init.d/S10cron restart
 ```
 
