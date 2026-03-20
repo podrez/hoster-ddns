@@ -76,6 +76,19 @@ fi
 
 debug "host='$HOST' root='$ROOT_DOMAIN'"
 
+# ── inter-process lock ───────────────────────────────────────────────
+# Subdomains of the same root domain share a token cache. Serialize
+# concurrent cron runs so only one process authenticates and the rest
+# reuse the cache written by the first.
+LOCK_DIR="/tmp/hoster_ddns_$(echo "$ROOT_DOMAIN" | sed 's/[^a-zA-Z0-9]/_/g').lock"
+_LOCK_WAITED=0
+until mkdir "$LOCK_DIR" 2>/dev/null; do
+	[ $_LOCK_WAITED -ge 30 ] && fatal "timeout waiting for lock (stale lock at $LOCK_DIR?)"
+	_LOCK_WAITED=$((_LOCK_WAITED + 1))
+	sleep 1
+done
+trap 'rmdir "$LOCK_DIR" 2>/dev/null' EXIT INT TERM
+
 # ── token cache ──────────────────────────────────────────────────────
 TOK_FILE="/tmp/hoster_ddns_$(echo "$ROOT_DOMAIN" | sed 's/[^a-zA-Z0-9]/_/g').tok"
 
