@@ -2,7 +2,7 @@
 
 Обновляет DNS A-записи через [REST API hoster.by](https://serviceapi.hoster.by). Поддерживает два варианта установки: **OpenWrt** (через ddns-scripts) и **Keenetic** (Entware, standalone-скрипт + cron).
 
-Токен и ORDER_ID кэшируются по корневому домену — субдомены одного домена делят общий кэш и не тратят лишних запросов на аутентификацию.
+Токен и ORDER_ID кэшируются по корневому домену — субдомены одного домена делят общий кэш и не тратят лишних запросов на аутентификацию. Последний установленный IP тоже кэшируется: если адрес не изменился, запросы к API не делаются вовсе.
 
 ---
 
@@ -48,7 +48,7 @@ config service 'myddns_ipv4'
 | `domain`    | FQDN записи (`myhost.example.com`). Зона берётся из двух последних меток. Для apex — `example.com`. |
 | `username`  | Access-Key из панели hoster.by |
 | `password`  | Secret-Key из панели hoster.by |
-| `param_opt` | *(необязательно)* `order_id=12345` — пропустить авто-поиск ордера; `ttl=3600` — TTL в секундах |
+| `param_opt` | *(необязательно)* `order_id=12345` — пропустить авто-поиск ордера; `ttl=3600` — TTL в секундах; `check_interval=86400` — принудительная сверка с API раз в N секунд, даже если IP не изменился |
 
 Для AAAA-записи добавьте второй блок `service` с `option use_ipv6 '1'` и `ip_network 'wan6'`.
 
@@ -92,6 +92,8 @@ DOMAIN="myhost.example.com"
 # Необязательно:
 # ORDER_ID_OVERRIDE="12345"   # пропустить авто-поиск ордера
 # TTL=300                     # TTL в секундах
+# CHECK_INTERVAL=86400        # принудительная сверка с API раз в N секунд,
+#                             # даже если IP не изменился (0 = никогда, по умолчанию)
 # IP_SOURCE="auto"            # auto | iface:ppp0 | url:https://...
 # VERBOSE=1                   # подробное логирование
 ```
@@ -138,11 +140,12 @@ tail -f /opt/var/log/hoster-ddns.log
 
 ## Как это работает
 
-1. Аутентификация в API hoster.by по Access-Key / Secret-Key → JWT-токен
-2. Токен и ORDER_ID кэшируются в `/tmp/hoster_ddns_<root_domain>.tok` до истечения срока
-3. Поиск DNS-ордера для корневого домена (или берётся из `ORDER_ID_OVERRIDE` / `param_opt`)
-4. Чтение текущей A-записи
-5. Если IP изменился — обновление через PATCH
+1. Определяется текущий IP
+2. Сравнивается с кэшированным IP (`/tmp/hoster_ddns_<fqdn>.ip`). Если IP не изменился и `check_interval` не истёк — выход без единого запроса к API
+3. Аутентификация по Access-Key / Secret-Key → JWT-токен (кэшируется в `/tmp/hoster_ddns_<root_domain>.tok`)
+4. Поиск DNS-ордера для корневого домена (или берётся из `ORDER_ID_OVERRIDE` / `param_opt`)
+5. Если IP изменился — немедленное обновление через PATCH (без предварительного GET)
+6. Если сработал `check_interval` — GET текущей записи; PATCH только при расхождении
 
 ## Лицензия
 

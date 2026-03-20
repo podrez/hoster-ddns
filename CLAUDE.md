@@ -30,11 +30,19 @@ The script is **sourced** (not executed) inside ddns-scripts' `send_update()` fu
 | `username`       | Access-Key                               |
 | `password`       | Secret-Key                               |
 | `domain`         | FQDN (e.g. `www.ex.com` or `ex.com` for apex) |
-| `param_opt`      | `order_id=<id>` (optional, skips lookup) `ttl=<seconds>` (optional, keeps current if omitted) |
+| `param_opt`      | `order_id=<id>` (optional, skips lookup) `ttl=<seconds>` (optional, keeps current if omitted) `check_interval=<seconds>` (optional, force-verify DNS against API even when local IP unchanged; 0 = never, default) |
 
-## Token caching
+## Caching
 
-Cached in `/tmp/ddns_hoster_by_<domain>.tok` (4 lines: accessToken, userId, orderId, expiry). Reused until expired.
+**Token cache** — `/tmp/ddns_hoster_by_<domain>.tok` (4 lines: accessToken, userId, orderId, expiry). Keyed by root domain. Reused until expired.
+
+**IP cache** — `/tmp/ddns_hoster_by_<domain>.ip` (2 lines: last IP set, timestamp of last forced check). Keyed by full FQDN. Allows skipping all API calls when IP is unchanged and `check_interval` not elapsed.
+
+### Update logic
+
+- `IP unchanged` AND `check_interval` not elapsed → `return 0` immediately (zero API calls)
+- `IP changed` → skip GET, go straight to PATCH (saves one request)
+- `IP unchanged` but `check_interval` elapsed → GET records; PATCH only if mismatch detected
 
 ## Shell conventions
 

@@ -1,12 +1,14 @@
-# update_hoster_by.sh -ddns-scripts provider for hoster.by DNS API
+# update_hoster_by.sh - ddns-scripts provider for hoster.by DNS API
 #
-# Sourced by ddns-scripts send_update() -use 'return', never 'exit'.
+# Sourced by ddns-scripts send_update() - use 'return', never 'exit'.
 #
 # Configuration mapping (in /etc/config/ddns):
-#   option username   ->hoster.by Access-Key
-#   option password   ->hoster.by Secret-Key
-#   option domain     ->FQDN  (e.g. myhost.example.com or example.com for apex)
-#   option param_opt  ->optional: order_id=<id> ttl=<seconds> (omitted = keep current)
+#   option username   -> hoster.by Access-Key
+#   option password   -> hoster.by Secret-Key
+#   option domain     -> FQDN  (e.g. myhost.example.com or example.com for apex)
+#   option param_opt  -> optional: order_id=<id>  ttl=<seconds>  check_interval=<seconds>
+#                        check_interval: how often to force-verify DNS against API
+#                        even when local IP is unchanged (0 = never, default)
 #
 # SPDX-License-Identifier: GPL-2.0-only
 
@@ -19,14 +21,14 @@ __JSONFILTER="$(command -v jsonfilter)" || true
 [ -z "$CURL_SSL" ] && write_log 14 "hoster.by requires cURL with SSL support"
 [ -z "$username" ] && write_log 14 "'username' (Access-Key) not set"
 [ -z "$password" ] && write_log 14 "'password' (Secret-Key) not set"
-[ -z "$domain" ]   && write_log 14 "'domain' not set -use hostname@domain.tld"
+[ -z "$domain" ]   && write_log 14 "'domain' not set - use hostname@domain.tld"
 
 # force HTTPS
 use_https=1
 
 # ── parse domain ─────────────────────────────────────────────────────
-# sub.example.com  ->__HOST=sub        __DOMAIN=example.com
-# example.com      ->__HOST=example.com __DOMAIN=example.com  (apex record)
+# sub.example.com  -> __HOST=sub         __DOMAIN=example.com
+# example.com      -> __HOST=example.com __DOMAIN=example.com  (apex record)
 __TLD="${domain##*.}"
 __SLD="${domain%.*}"; __SLD="${__SLD##*.}"
 __DOMAIN="${__SLD}.${__TLD}"
@@ -39,15 +41,25 @@ fi
 # record type based on IP version
 [ "$use_ipv6" -eq 0 ] && __RRTYPE="a" || __RRTYPE="aaaa"
 
+# FQDN as returned by API (trailing dot)
+# apex: "domain.tld."   sub: "hostname.domain.tld."
+if [ "$__HOST" = "$__DOMAIN" ]; then
+	__FQDN="${__DOMAIN}."
+else
+	__FQDN="${__HOST}.${__DOMAIN}."
+fi
+
 write_log 7 "hoster.by: host='$__HOST' domain='$__DOMAIN' rrtype='$__RRTYPE' ip='$__IP'"
 
 # ── parse param_opt ──────────────────────────────────────────────────
 __ORDER_ID_OPT=""
 __TTL=""
+__CHECK_INTERVAL=0
 for __PAIR in $param_opt; do
 	case "$__PAIR" in
-		order_id=*) __ORDER_ID_OPT="${__PAIR#order_id=}" ;;
-		ttl=*)      __TTL="${__PAIR#ttl=}" ;;
+		order_id=*)       __ORDER_ID_OPT="${__PAIR#order_id=}" ;;
+		ttl=*)            __TTL="${__PAIR#ttl=}" ;;
+		check_interval=*) __CHECK_INTERVAL="${__PAIR#check_interval=}" ;;
 	esac
 done
 
@@ -99,9 +111,47 @@ hoster_check_response() {
 	if [ "$__STATUS" != "ok" ]; then
 		local __MSG
 		__MSG=$(cat "$DATFILE" 2>/dev/null)
-		write_log 14 "hoster.by: $1 -API error: $__MSG"
+		write_log 14 "hoster.by: $1 - API error: $__MSG"
 	fi
 }
+
+# ── helper: update IP record via PATCH ───────────────────────────────
+hoster_patch_record() {
+	hoster_transfer "$__PRGBASE -X PATCH '$__API/dns/orders/$__ORDER_ID/records/$__RRTYPE/$__FQDN' \
+		-H 'Access-Token: $__ACCESS_TOKEN' \
+		-H 'X-User-Id: $__USER_ID' \
+		-H 'Content-Type: application/json' \
+		-d '{\"records\":[{\"content\":\"$__IP\",\"disabled\":false}]${__TTL:+,\"ttl\":$__TTL}}' \
+		-o '$DATFILE' 2>'$ERRFILE'"
+	hoster_check_response "update $__RRTYPE record"
+	write_log 7 "hoster.by: record '$__HOST' updated to $__IP"
+}
+
+# ── IP cache ─────────────────────────────────────────────────────────
+# Stores the last IP we successfully set + timestamp of last forced check.
+# Keyed by full domain (including subdomain) so different hosts don't collide.
+__IP_FILE="/tmp/ddns_hoster_by_$(echo "${domain}" | sed 's/[^a-zA-Z0-9]/_/g').ip"
+
+__CACHED_IP=""
+__LAST_CHECK=0
+if [ -f "$__IP_FILE" ]; then
+	__CACHED_IP=$(sed -n '1p' "$__IP_FILE")
+	__LAST_CHECK=$(sed -n '2p' "$__IP_FILE")
+fi
+
+__NOW=$(date +%s)
+
+# decide what needs to be done
+__IP_CHANGED=0
+__FORCE_CHECK=0
+[ "$__IP" != "$__CACHED_IP" ] && __IP_CHANGED=1
+[ "$__CHECK_INTERVAL" -gt 0 ] && \
+	[ $(( __NOW - __LAST_CHECK )) -ge "$__CHECK_INTERVAL" ] && __FORCE_CHECK=1
+
+if [ "$__IP_CHANGED" -eq 0 ] && [ "$__FORCE_CHECK" -eq 0 ]; then
+	write_log 7 "hoster.by: IP '$__IP' unchanged and check interval not reached, skipping"
+	return 0
+fi
 
 # ── token cache ──────────────────────────────────────────────────────
 # Sanitise domain for filename: replace dots and @ with underscores
@@ -121,7 +171,6 @@ if [ -f "$__TOK_FILE" ]; then
 fi
 
 # ── authenticate if token is expired or missing ─────────────────────
-__NOW=$(date +%s)
 if [ -z "$__ACCESS_TOKEN" ] || [ "$__NOW" -ge "$__EXPIRES" ]; then
 	write_log 7 "hoster.by: authenticating (token missing or expired)"
 
@@ -139,7 +188,7 @@ if [ -z "$__ACCESS_TOKEN" ] || [ "$__NOW" -ge "$__EXPIRES" ]; then
 	[ -z "$__ACCESS_TOKEN" ] && write_log 14 "hoster.by: failed to obtain access token"
 	[ -z "$__USER_ID" ]      && write_log 14 "hoster.by: failed to obtain userId"
 
-	# invalidate cached orderId -it belongs to the new session
+	# invalidate cached orderId - it belongs to the new session
 	__ORDER_ID=""
 
 	write_log 7 "hoster.by: authenticated, userId=$__USER_ID expires=$__EXPIRES"
@@ -185,57 +234,47 @@ $__ORDER_ID
 $__EXPIRES
 EOF
 
-# ── read current record ──────────────────────────────────────────────
-write_log 7 "hoster.by: reading $__RRTYPE records for order $__ORDER_ID"
-
-hoster_transfer "$__PRGBASE -X GET '$__API/dns/orders/$__ORDER_ID/records/$__RRTYPE' \
-	-H 'Access-Token: $__ACCESS_TOKEN' \
-	-H 'X-User-Id: $__USER_ID' \
-	-o '$DATFILE' 2>'$ERRFILE'"
-
-hoster_check_response "list $__RRTYPE records"
-
-# Build the FQDN to match against -API returns names with trailing dot
-# For apex record (__HOST == __DOMAIN): FQDN is "domain.tld."
-# For sub record: FQDN is "hostname.domain.tld."
-if [ "$__HOST" = "$__DOMAIN" ]; then
-	__FQDN="${__DOMAIN}."
+# ── update or verify ─────────────────────────────────────────────────
+if [ "$__IP_CHANGED" -eq 1 ]; then
+	# IP changed locally - skip GET, update immediately
+	write_log 7 "hoster.by: IP changed to '$__IP', updating $__RRTYPE record '$__HOST'"
+	hoster_patch_record
 else
-	__FQDN="${__HOST}.${__DOMAIN}."
-fi
+	# Forced periodic check: GET current DNS record and compare
+	write_log 7 "hoster.by: forced check, reading $__RRTYPE records for order $__ORDER_ID"
 
-local __CURRENT_IP=""
-local __IDX=0
-while : ; do
-	local __RNAME
-	__RNAME=$($__JSONFILTER -i "$DATFILE" -e "@.payload.records[$__IDX].name" 2>/dev/null) || break
-	[ -z "$__RNAME" ] && break
-	if [ "$__RNAME" = "$__FQDN" ]; then
-		__CURRENT_IP=$($__JSONFILTER -i "$DATFILE" -e "@.payload.records[$__IDX].records[0].content" 2>/dev/null)
-		break
+	hoster_transfer "$__PRGBASE -X GET '$__API/dns/orders/$__ORDER_ID/records/$__RRTYPE' \
+		-H 'Access-Token: $__ACCESS_TOKEN' \
+		-H 'X-User-Id: $__USER_ID' \
+		-o '$DATFILE' 2>'$ERRFILE'"
+
+	hoster_check_response "list $__RRTYPE records"
+
+	local __CURRENT_IP=""
+	local __IDX=0
+	while : ; do
+		local __RNAME
+		__RNAME=$($__JSONFILTER -i "$DATFILE" -e "@.payload.records[$__IDX].name" 2>/dev/null) || break
+		[ -z "$__RNAME" ] && break
+		if [ "$__RNAME" = "$__FQDN" ]; then
+			__CURRENT_IP=$($__JSONFILTER -i "$DATFILE" -e "@.payload.records[$__IDX].records[0].content" 2>/dev/null)
+			break
+		fi
+		__IDX=$(( __IDX + 1 ))
+	done
+
+	write_log 7 "hoster.by: current IP='${__CURRENT_IP:-<not found>}' desired IP='$__IP'"
+
+	if [ "$__CURRENT_IP" = "$__IP" ]; then
+		write_log 7 "hoster.by: record '$__HOST' matches $__IP, no update needed"
+		printf '%s\n%s\n' "$__IP" "$__NOW" > "$__IP_FILE"
+		return 0
 	fi
-	__IDX=$(( __IDX + 1 ))
-done
 
-write_log 7 "hoster.by: current IP='${__CURRENT_IP:-<not found>}' desired IP='$__IP'"
-
-# ── compare IPs ──────────────────────────────────────────────────────
-if [ "$__CURRENT_IP" = "$__IP" ]; then
-	write_log 7 "hoster.by: record '$__HOST' already points to $__IP -no update needed"
-	return 0
+	write_log 7 "hoster.by: DNS mismatch detected (got '${__CURRENT_IP:-<not found>}'), updating"
+	hoster_patch_record
 fi
 
-# ── update record ────────────────────────────────────────────────────
-write_log 7 "hoster.by: updating $__RRTYPE record '$__HOST' ->$__IP"
-
-hoster_transfer "$__PRGBASE -X PATCH '$__API/dns/orders/$__ORDER_ID/records/$__RRTYPE/$__FQDN' \
-	-H 'Access-Token: $__ACCESS_TOKEN' \
-	-H 'X-User-Id: $__USER_ID' \
-	-H 'Content-Type: application/json' \
-	-d '{\"records\":[{\"content\":\"$__IP\",\"disabled\":false}]${__TTL:+,\"ttl\":$__TTL}}' \
-	-o '$DATFILE' 2>'$ERRFILE'"
-
-hoster_check_response "update $__RRTYPE record"
-
-write_log 7 "hoster.by: record '$__HOST' updated to $__IP"
+# ── update IP cache ──────────────────────────────────────────────────
+printf '%s\n%s\n' "$__IP" "$__NOW" > "$__IP_FILE"
 return 0

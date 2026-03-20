@@ -63,8 +63,8 @@ esac
 debug "detected IP: $IP"
 
 # ── parse domain ─────────────────────────────────────────────────────
-# sub.example.com  ->  HOST=sub         ROOT=example.com
-# example.com      ->  HOST=example.com ROOT=example.com  (apex)
+# sub.example.com  ->  HOST=sub         ROOT_DOMAIN=example.com
+# example.com      ->  HOST=example.com ROOT_DOMAIN=example.com  (apex)
 _TLD="${DOMAIN##*.}"
 _SLD="${DOMAIN%.*}"; _SLD="${_SLD##*.}"
 ROOT_DOMAIN="${_SLD}.${_TLD}"
@@ -74,7 +74,38 @@ else
 	HOST="${DOMAIN%."$ROOT_DOMAIN"}"
 fi
 
+# FQDN as returned by API (trailing dot)
+if [ "$HOST" = "$ROOT_DOMAIN" ]; then
+	FQDN="${ROOT_DOMAIN}."
+else
+	FQDN="${HOST}.${ROOT_DOMAIN}."
+fi
+
 debug "host='$HOST' root='$ROOT_DOMAIN'"
+
+# ── IP cache — early exit before acquiring lock ───────────────────────
+# Keyed by full DOMAIN (including subdomain) so different hosts don't collide.
+IP_FILE="/tmp/hoster_ddns_$(echo "$DOMAIN" | sed 's/[^a-zA-Z0-9]/_/g').ip"
+
+CACHED_IP=""
+LAST_CHECK=0
+if [ -f "$IP_FILE" ]; then
+	CACHED_IP=$(sed -n '1p' "$IP_FILE")
+	LAST_CHECK=$(sed -n '2p' "$IP_FILE")
+fi
+
+NOW=$(date +%s)
+
+IP_CHANGED=0
+FORCE_CHECK=0
+[ "$IP" != "$CACHED_IP" ] && IP_CHANGED=1
+[ "${CHECK_INTERVAL:-0}" -gt 0 ] && \
+	[ $(( NOW - LAST_CHECK )) -ge "$CHECK_INTERVAL" ] && FORCE_CHECK=1
+
+if [ "$IP_CHANGED" -eq 0 ] && [ "$FORCE_CHECK" -eq 0 ]; then
+	debug "IP '$IP' unchanged and check interval not reached, skipping"
+	exit 0
+fi
 
 # ── inter-process lock ───────────────────────────────────────────────
 # Subdomains of the same root domain share a token cache. Serialize
@@ -105,7 +136,6 @@ if [ -f "$TOK_FILE" ]; then
 fi
 
 # ── authenticate if token is expired or missing ──────────────────────
-NOW=$(date +%s)
 if [ -z "$ACCESS_TOKEN" ] || [ "$NOW" -ge "${EXPIRES:-0}" ]; then
 	debug "authenticating (token missing or expired)"
 
@@ -154,51 +184,57 @@ fi
 printf '%s\n%s\n%s\n%s\n' \
 	"$ACCESS_TOKEN" "$USER_ID" "$ORDER_ID" "$EXPIRES" > "$TOK_FILE"
 
-# ── read current A record ────────────────────────────────────────────
-debug "reading A records for order $ORDER_ID"
+# ── helper: update IP record via PATCH ───────────────────────────────
+patch_record() {
+	_TTL_JSON=""
+	[ -n "${TTL:-}" ] && _TTL_JSON=",\"ttl\":$TTL"
 
-RESP=$($CURL -sf --max-time 15 -X GET "$API/dns/orders/$ORDER_ID/records/a" \
-	-H "Access-Token: $ACCESS_TOKEN" \
-	-H "X-User-Id: $USER_ID") \
-	|| fatal "list A records request failed (curl error)"
+	RESP=$($CURL -sf --max-time 15 -X PATCH \
+		"$API/dns/orders/$ORDER_ID/records/a/$FQDN" \
+		-H "Access-Token: $ACCESS_TOKEN" \
+		-H "X-User-Id: $USER_ID" \
+		-H "Content-Type: application/json" \
+		-d "{\"records\":[{\"content\":\"$IP\",\"disabled\":false}]$_TTL_JSON}") \
+		|| fatal "update record request failed (curl error)"
 
-_STATUS=$(echo "$RESP" | $JQ -r '.statusCode // empty')
-[ "$_STATUS" != "ok" ] && fatal "list A records failed: $RESP"
+	_STATUS=$(echo "$RESP" | $JQ -r '.statusCode // empty')
+	[ "$_STATUS" != "ok" ] && fatal "update record failed: $RESP"
 
-# API returns record names with trailing dot
-if [ "$HOST" = "$ROOT_DOMAIN" ]; then
-	FQDN="${ROOT_DOMAIN}."
+	log "record '$HOST' updated to $IP"
+}
+
+# ── update or verify ─────────────────────────────────────────────────
+if [ "$IP_CHANGED" -eq 1 ]; then
+	# IP changed locally — skip GET, update immediately
+	log "IP changed to '$IP', updating A record '$HOST'"
+	patch_record
 else
-	FQDN="${HOST}.${ROOT_DOMAIN}."
+	# Forced periodic check: GET current DNS record and compare
+	debug "forced check, reading A records for order $ORDER_ID"
+
+	RESP=$($CURL -sf --max-time 15 -X GET "$API/dns/orders/$ORDER_ID/records/a" \
+		-H "Access-Token: $ACCESS_TOKEN" \
+		-H "X-User-Id: $USER_ID") \
+		|| fatal "list A records request failed (curl error)"
+
+	_STATUS=$(echo "$RESP" | $JQ -r '.statusCode // empty')
+	[ "$_STATUS" != "ok" ] && fatal "list A records failed: $RESP"
+
+	CURRENT_IP=$(echo "$RESP" | $JQ -r --arg n "$FQDN" \
+		'.payload.records[] | select(.name == $n) | .records[0].content // empty' \
+		| head -1)
+
+	debug "current='${CURRENT_IP:-<not found>}' desired='$IP'"
+
+	if [ "$CURRENT_IP" = "$IP" ]; then
+		debug "record '$HOST' matches $IP, no update needed"
+		printf '%s\n%s\n' "$IP" "$NOW" > "$IP_FILE"
+		exit 0
+	fi
+
+	log "DNS mismatch detected (got '${CURRENT_IP:-<not found>}'), updating A record '$HOST'"
+	patch_record
 fi
 
-CURRENT_IP=$(echo "$RESP" | $JQ -r --arg n "$FQDN" \
-	'.payload.records[] | select(.name == $n) | .records[0].content // empty' \
-	| head -1)
-
-debug "current='${CURRENT_IP:-<not found>}' desired='$IP'"
-
-# ── compare IPs ──────────────────────────────────────────────────────
-if [ "$CURRENT_IP" = "$IP" ]; then
-	debug "record '$HOST' already points to $IP — no update needed"
-	exit 0
-fi
-
-# ── update record ────────────────────────────────────────────────────
-log "updating A record '$HOST' -> $IP (was: ${CURRENT_IP:-<not found>})"
-
-_TTL_JSON=""
-[ -n "${TTL:-}" ] && _TTL_JSON=",\"ttl\":$TTL"
-
-RESP=$($CURL -sf --max-time 15 -X PATCH \
-	"$API/dns/orders/$ORDER_ID/records/a/$FQDN" \
-	-H "Access-Token: $ACCESS_TOKEN" \
-	-H "X-User-Id: $USER_ID" \
-	-H "Content-Type: application/json" \
-	-d "{\"records\":[{\"content\":\"$IP\",\"disabled\":false}]$_TTL_JSON}") \
-	|| fatal "update record request failed (curl error)"
-
-_STATUS=$(echo "$RESP" | $JQ -r '.statusCode // empty')
-[ "$_STATUS" != "ok" ] && fatal "update record failed: $RESP"
-
-log "record '$HOST' updated to $IP"
+# ── update IP cache ──────────────────────────────────────────────────
+printf '%s\n%s\n' "$IP" "$NOW" > "$IP_FILE"
